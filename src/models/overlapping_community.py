@@ -51,18 +51,44 @@ class CONGA(OverlappingCommunityDetection):
         
         try:
             from cdlib import algorithms
+            import networkx as nx
             
-            # Sử dụng cdlib để triển khai CONGA
-            if max_split_degree is None:
-                max_split_degree = len(self.G.nodes()) // 2
-                
-            communities = algorithms.conga(self.G, number_communities=num_communities, 
-                                          max_communities=max_iter)
+            # Đảm bảo đồ thị là một instance của nx.Graph
+            if not isinstance(self.G, nx.Graph):
+                original_graph = self.G
+                self.G = nx.Graph(self.G)
+                print("Đã chuyển đổi đồ thị sang định dạng nx.Graph")
+            
+            # Kiểm tra phiên bản cdlib và xử lý tương thích
+            from importlib.metadata import version
+            cdlib_version = version('cdlib')
+            print(f"Phiên bản cdlib: {cdlib_version}")
+            
+            # Điều chỉnh tham số dựa trên phiên bản cdlib
+            if float(cdlib_version.split('.')[0]) < 1 and float(cdlib_version.split('.')[1]) >= 4:
+                # Từ cdlib 0.4.0 trở lên
+                if num_communities is None:
+                    num_communities = 2
+                try:
+                    communities = algorithms.conga(self.G, number_communities=num_communities)
+                except TypeError:
+                    # Nếu API đã thay đổi, thử với tham số khác
+                    communities = algorithms.conga(self.G, n_communities=num_communities)
+            else:
+                # Với cdlib 0.2.x
+                if max_split_degree is None:
+                    max_split_degree = len(self.G.nodes()) // 2
+                communities = algorithms.conga(self.G, number_communities=num_communities, 
+                                             max_communities=max_iter)
             
             return communities.communities
-        except ImportError:
-            print("Không thể sử dụng CONGA. Hãy đảm bảo bạn đã cài đặt thư viện cdlib.")
-            # Nếu không có cdlib, trả về chia mặc định
+        except ImportError as e:
+            print(f"Không thể sử dụng CONGA. Lỗi: {str(e)}")
+            print("Đảm bảo bạn đã cài đặt thư viện cdlib. Đang sử dụng phương pháp dự phòng...")
+            return self._fallback_overlapping_detection(num_communities)
+        except Exception as e:
+            print(f"Lỗi khi chạy CONGA: {str(e)}")
+            print("Đang sử dụng phương pháp dự phòng...")
             return self._fallback_overlapping_detection(num_communities)
     
     def _fallback_overlapping_detection(self, num_communities=2):
