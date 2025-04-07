@@ -64,24 +64,82 @@ class CONGA(OverlappingCommunityDetection):
             cdlib_version = version('cdlib')
             print(f"Phiên bản cdlib: {cdlib_version}")
             
-            # Điều chỉnh tham số dựa trên phiên bản cdlib
-            if float(cdlib_version.split('.')[0]) < 1 and float(cdlib_version.split('.')[1]) >= 4:
-                # Từ cdlib 0.4.0 trở lên
-                if num_communities is None:
-                    num_communities = 2
-                try:
-                    communities = algorithms.conga(self.G, number_communities=num_communities)
-                except TypeError:
-                    # Nếu API đã thay đổi, thử với tham số khác
-                    communities = algorithms.conga(self.G, n_communities=num_communities)
-            else:
-                # Với cdlib 0.2.x
-                if max_split_degree is None:
-                    max_split_degree = len(self.G.nodes()) // 2
-                communities = algorithms.conga(self.G, number_communities=num_communities, 
-                                             max_communities=max_iter)
+            # Xử lý cộng đồng không chồng chéo khi CONGA không thể chạy
+            if len(self.G.nodes()) < 5:
+                print("Đồ thị quá nhỏ cho CONGA, sử dụng phương pháp dự phòng")
+                return self._fallback_overlapping_detection(num_communities)
             
-            return communities.communities
+            if num_communities is None:
+                num_communities = min(5, len(self.G.nodes()) // 5)
+                
+            # Điều chỉnh tham số dựa trên phiên bản cdlib
+            try:
+                print(f"Thử phát hiện {num_communities} cộng đồng chồng chéo...")
+                # Thử với API mới (cdlib 0.4.0+)
+                communities = algorithms.conga(self.G, number_communities=num_communities)
+            except TypeError:
+                try:
+                    # Thử với tham số khác
+                    communities = algorithms.conga(self.G, n_communities=num_communities)
+                except Exception as e:
+                    print(f"Lỗi khi chạy conga: {str(e)}")
+                    # Thử lại với tham số mặc định
+                    communities = algorithms.conga(self.G)
+            except Exception as e:
+                print(f"Lỗi khi chạy CONGA: {str(e)}")
+                print("Đang sử dụng phương pháp dự phòng...")
+                return self._fallback_overlapping_detection(num_communities)
+            
+            # Kiểm tra kết quả và chuyển đổi nếu cần
+            if hasattr(communities, 'communities'):
+                result_communities = communities.communities
+            else:
+                result_communities = communities
+            
+            # Chuyển đổi sang list of sets nếu không phải
+            if isinstance(result_communities, list):
+                # Kiểm tra xem các phần tử có phải là set không
+                if not all(isinstance(comm, set) for comm in result_communities):
+                    result_communities = [set(comm) for comm in result_communities]
+            else:
+                # Trường hợp khác, tạo danh sách rỗng
+                print("Định dạng không được hỗ trợ, sử dụng phương pháp dự phòng")
+                return self._fallback_overlapping_detection(num_communities)
+            
+            # Kiểm tra số lượng cộng đồng
+            if len(result_communities) < 2:
+                print("Không phát hiện đủ cộng đồng, sử dụng phương pháp dự phòng")
+                return self._fallback_overlapping_detection(num_communities)
+            
+            # Đảm bảo không có cộng đồng trùng
+            unique_communities = []
+            for comm in result_communities:
+                if len(comm) > 0 and all(comm != existing for existing in unique_communities):
+                    unique_communities.append(comm)
+            
+            # Đảm bảo mọi nút trong đồ thị đều nằm trong ít nhất một cộng đồng
+            all_nodes = set(self.G.nodes())
+            covered_nodes = set()
+            for comm in unique_communities:
+                covered_nodes.update(comm)
+            
+            uncovered_nodes = all_nodes - covered_nodes
+            if uncovered_nodes:
+                if len(uncovered_nodes) / len(all_nodes) > 0.8:  # Nếu quá nhiều nút không được bao phủ
+                    print("Quá nhiều nút không được bao phủ, sử dụng phương pháp dự phòng")
+                    return self._fallback_overlapping_detection(num_communities)
+                print(f"Có {len(uncovered_nodes)} nút không thuộc cộng đồng nào. Thêm vào cộng đồng mới.")
+                # Thêm các nút chưa được bao phủ vào một cộng đồng mới
+                unique_communities.append(uncovered_nodes)
+            
+            # Kiểm tra lần cuối để đảm bảo số lượng cộng đồng
+            if len(unique_communities) < 2:
+                print("Không đủ cộng đồng sau khi xử lý, sử dụng phương pháp dự phòng")
+                return self._fallback_overlapping_detection(num_communities)
+                
+            print(f"Đã phát hiện {len(unique_communities)} cộng đồng chồng chéo")
+            return unique_communities
+            
         except ImportError as e:
             print(f"Không thể sử dụng CONGA. Lỗi: {str(e)}")
             print("Đảm bảo bạn đã cài đặt thư viện cdlib. Đang sử dụng phương pháp dự phòng...")
@@ -95,40 +153,91 @@ class CONGA(OverlappingCommunityDetection):
         """
         Phương pháp dự phòng nếu CONGA không khả dụng
         """
-        # Sử dụng k-clique để phát hiện
-        k = 3  # Kích thước clique
-        communities_generator = nx.algorithms.community.k_clique_communities(self.G, k)
-        communities = list(communities_generator)
+        import networkx as nx
+        import random
         
-        # Nếu không tìm thấy đủ cộng đồng, thêm một số đỉnh vào các cộng đồng hiện có
+        print("Đang sử dụng phương pháp phát hiện cộng đồng chồng chéo dự phòng...")
+        
+        # Đảm bảo số lượng cộng đồng hợp lệ
+        if num_communities is None or num_communities < 2:
+            num_communities = 2
+        
+        communities = []
+        
+        # Thử dùng thuật toán phân cụm k-clique nếu có thể
+        try:
+            # Sử dụng k-clique để phát hiện
+            k = 3  # Kích thước clique
+            communities_generator = nx.algorithms.community.k_clique_communities(self.G, k)
+            communities = list(communities_generator)
+            print(f"Đã tìm thấy {len(communities)} cộng đồng sử dụng k-clique clustering")
+        except Exception as e:
+            print(f"Lỗi khi sử dụng k-clique: {str(e)}")
+            communities = []
+        
+        # Nếu không tìm thấy đủ cộng đồng, thử phương pháp khác
         if len(communities) < num_communities:
-            # Tạo các cộng đồng ban đầu
+            print(f"Không đủ cộng đồng ({len(communities)}), cần thêm ({num_communities - len(communities)})")
+            
+            # Chuyển đổi danh sách hiện có sang định dạng set
             communities = [set(c) for c in communities]
+            
+            # Nếu không tìm thấy cộng đồng nào, thử phân chia mạng thành các thành phần liên thông
             if not communities:
-                # Nếu không tìm thấy cộng đồng nào, tạo một cộng đồng mới
-                communities = [set(random.sample(list(self.G.nodes()), 
-                                               len(self.G.nodes()) // num_communities))]
+                print("Thử phân chia thành các thành phần liên thông...")
+                try:
+                    # Lấy các thành phần liên thông
+                    components = list(nx.connected_components(self.G))
+                    if len(components) > 1:
+                        communities = components[:num_communities]
+                        print(f"Đã tìm thấy {len(communities)} thành phần liên thông")
+                except Exception as e:
+                    print(f"Lỗi khi tìm các thành phần liên thông: {str(e)}")
+            
+            # Nếu vẫn không đủ cộng đồng, tạo các cộng đồng ngẫu nhiên
+            if not communities:
+                print("Tạo cộng đồng ngẫu nhiên từ toàn bộ đồ thị...")
+                # Tạo một cộng đồng ban đầu chứa tất cả các đỉnh
+                nodes = list(self.G.nodes())
+                communities = [set(random.sample(nodes, min(len(nodes), len(nodes) // num_communities + 1)))]
             
             # Thêm đỉnh vào các cộng đồng cho đến khi đạt số lượng mong muốn
             while len(communities) < num_communities:
-                # Chọn một cộng đồng ngẫu nhiên
+                # Chọn một cộng đồng ngẫu nhiên để chia
+                if not communities:
+                    break
+                
                 source_comm = random.choice(communities)
                 
-                # Chọn một tập con ngẫu nhiên
-                subset_size = len(source_comm) // 2
-                if subset_size == 0:
-                    subset_size = 1
+                if len(source_comm) <= 3:  # Nếu cộng đồng quá nhỏ, không chia nữa
+                    continue
                 
+                # Chọn một tập con ngẫu nhiên
+                subset_size = max(3, len(source_comm) // 2)
                 new_comm = set(random.sample(list(source_comm), subset_size))
                 
-                # Thêm một số đỉnh xung quanh
+                # Thêm một số đỉnh xung quanh để tạo sự chồng chéo
                 for node in list(new_comm):
-                    for neighbor in self.G.neighbors(node):
+                    neighbors = list(self.G.neighbors(node))
+                    for neighbor in neighbors:
                         if random.random() < 0.3:  # 30% cơ hội thêm láng giềng
                             new_comm.add(neighbor)
                 
-                communities.append(new_comm)
+                # Chỉ thêm cộng đồng mới nếu nó khác biệt đủ với các cộng đồng hiện có
+                if len(new_comm) > 0:
+                    # Kiểm tra sự chồng chéo với các cộng đồng hiện có
+                    overlap_too_high = False
+                    for existing_comm in communities:
+                        overlap = len(new_comm.intersection(existing_comm)) / len(new_comm.union(existing_comm))
+                        if overlap > 0.8:  # Nếu chồng chéo quá 80%, không thêm
+                            overlap_too_high = True
+                            break
+                    
+                    if not overlap_too_high:
+                        communities.append(new_comm)
+                        print(f"Đã thêm cộng đồng mới, kích thước: {len(new_comm)}")
         
+        print(f"Đã tạo {len(communities)} cộng đồng chồng chéo")
         return communities
 
 
@@ -153,18 +262,83 @@ class CONGO(OverlappingCommunityDetection):
         
         try:
             from cdlib import algorithms
+            import networkx as nx
             
-            # Sử dụng cdlib để triển khai CONGO
-            if max_split_degree is None:
-                max_split_degree = len(self.G.nodes()) // 2
-                
-            communities = algorithms.congo(self.G, number_communities=num_communities, 
-                                         max_communities=max_iter)
+            # Đảm bảo đồ thị là một instance của nx.Graph
+            if not isinstance(self.G, nx.Graph):
+                original_graph = self.G
+                self.G = nx.Graph(self.G)
+                print("Đã chuyển đổi đồ thị sang định dạng nx.Graph")
             
-            return communities.communities
-        except ImportError:
-            print("Không thể sử dụng CONGO. Hãy đảm bảo bạn đã cài đặt thư viện cdlib.")
+            # Kiểm tra phiên bản cdlib và xử lý tương thích
+            from importlib.metadata import version
+            cdlib_version = version('cdlib')
+            print(f"Phiên bản cdlib: {cdlib_version}")
+            
+            # Điều chỉnh tham số dựa trên phiên bản cdlib
+            if float(cdlib_version.split('.')[0]) < 1 and float(cdlib_version.split('.')[1]) >= 4:
+                # Từ cdlib 0.4.0 trở lên
+                if num_communities is None:
+                    num_communities = 2
+                try:
+                    communities = algorithms.congo(self.G, number_communities=num_communities)
+                except TypeError:
+                    # Nếu API đã thay đổi, thử với tham số khác
+                    communities = algorithms.congo(self.G, n_communities=num_communities)
+            else:
+                # Với cdlib 0.2.x
+                if max_split_degree is None:
+                    max_split_degree = len(self.G.nodes()) // 2
+                communities = algorithms.congo(self.G, number_communities=num_communities, 
+                                             max_communities=max_iter)
+            
+            # Kiểm tra kết quả và chuyển đổi nếu cần
+            if hasattr(communities, 'communities'):
+                result_communities = communities.communities
+            else:
+                result_communities = communities
+            
+            # Chuyển đổi sang list of sets nếu không phải
+            if isinstance(result_communities, list):
+                # Kiểm tra xem các phần tử có phải là set không
+                if not all(isinstance(comm, set) for comm in result_communities):
+                    result_communities = [set(comm) for comm in result_communities]
+            else:
+                # Trường hợp khác, tạo danh sách rỗng
+                print("Định dạng không được hỗ trợ, sử dụng phương pháp dự phòng")
+                conga = CONGA(self.G)
+                return conga._fallback_overlapping_detection(num_communities)
+            
+            # Đảm bảo không có cộng đồng trùng
+            unique_communities = []
+            for comm in result_communities:
+                if comm not in unique_communities and len(comm) > 0:
+                    unique_communities.append(comm)
+            
+            # Đảm bảo mọi nút trong đồ thị đều nằm trong ít nhất một cộng đồng
+            all_nodes = set(self.G.nodes())
+            covered_nodes = set()
+            for comm in unique_communities:
+                covered_nodes.update(comm)
+            
+            uncovered_nodes = all_nodes - covered_nodes
+            if uncovered_nodes:
+                print(f"Có {len(uncovered_nodes)} nút không thuộc cộng đồng nào. Thêm vào cộng đồng mới.")
+                # Thêm các nút chưa được bao phủ vào một cộng đồng mới
+                unique_communities.append(uncovered_nodes)
+            
+            print(f"Đã phát hiện {len(unique_communities)} cộng đồng chồng chéo")
+            return unique_communities
+            
+        except ImportError as e:
+            print(f"Không thể sử dụng CONGO. Lỗi: {str(e)}")
+            print("Đảm bảo bạn đã cài đặt thư viện cdlib. Đang sử dụng phương pháp dự phòng...")
             # Sử dụng cùng một phương pháp dự phòng như CONGA
+            conga = CONGA(self.G)
+            return conga._fallback_overlapping_detection(num_communities)
+        except Exception as e:
+            print(f"Lỗi khi chạy CONGO: {str(e)}")
+            print("Đang sử dụng phương pháp dự phòng...")
             conga = CONGA(self.G)
             return conga._fallback_overlapping_detection(num_communities)
 

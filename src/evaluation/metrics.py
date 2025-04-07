@@ -25,7 +25,57 @@ def modularity(G, communities):
                 comm_dict[comm_id].add(node)
         communities = list(comm_dict.values())
     
-    return nx.algorithms.community.modularity(G, communities)
+    # Kiểm tra và chuyển đổi loại dữ liệu
+    communities = [set(str(node) for node in community) for community in communities]
+    
+    try:
+        # Trường hợp cộng đồng không chồng chéo
+        return nx.algorithms.community.modularity(G, communities)
+    except Exception as e:
+        print(f"Không thể tính modularity tiêu chuẩn: {str(e)}")
+        print("Chuyển sang sử dụng phương pháp tính modularity cho cộng đồng chồng chéo...")
+        
+        # Phương pháp dự phòng cho cộng đồng chồng chéo
+        try:
+            from cdlib import evaluation
+            from cdlib import NodeClustering
+            
+            # Chuyển sang định dạng cdlib NodeClustering
+            comm_list = [list(comm) for comm in communities]
+            # Tạo đối tượng NodeClustering
+            node_clustering = NodeClustering(communities=comm_list, graph=G, method_name="CONGA")
+            return evaluation.newman_girvan_modularity(node_clustering).score
+        except ImportError:
+            print("Không thể sử dụng cdlib.evaluation. Tính modularity thủ công...")
+            return _custom_modularity(G, communities)
+        except Exception as e:
+            print(f"Lỗi khi sử dụng cdlib: {str(e)}")
+            return _custom_modularity(G, communities)
+
+def _custom_modularity(G, communities):
+    """
+    Tính modularity cho cộng đồng chồng chéo theo phương pháp thủ công
+    """
+    m = G.number_of_edges()
+    if m == 0:
+        return 0
+    
+    Q = 0
+    for comm in communities:
+        # Kiểm tra xem tất cả các nút trong comm có trong đồ thị G không
+        valid_nodes = [node for node in comm if node in G]
+        subgraph = G.subgraph(valid_nodes)
+        
+        # Số cạnh trong cộng đồng
+        e_in = subgraph.number_of_edges()
+        
+        # Tổng bậc của các nút trong cộng đồng
+        total_degree = sum(dict(G.degree(valid_nodes)).values())
+        
+        # Tăng modularity
+        Q += (e_in / m) - ((total_degree / (2 * m)) ** 2)
+    
+    return Q
 
 def conductance(G, communities):
     """
@@ -49,19 +99,42 @@ def conductance(G, communities):
                 comm_dict[comm_id].add(node)
         communities = list(comm_dict.values())
     
+    # Kiểm tra và chuyển đổi loại dữ liệu
+    communities = [set(str(node) for node in community) for community in communities]
+    
     results = {}
+    valid_communities = []
     
     # Tính conductance cho mỗi cộng đồng
     for i, comm in enumerate(communities):
-        cut_size = nx.cut_size(G, comm)
-        volume = sum(dict(G.degree(comm)).values())
-        if volume == 0:
+        # Kiểm tra xem tất cả các nút trong comm có trong đồ thị G không
+        valid_nodes = [node for node in comm if node in G]
+        
+        if not valid_nodes:
             results[f'community_{i}'] = 0
-        else:
-            results[f'community_{i}'] = cut_size / volume
+            continue
+        
+        try:
+            cut_size = nx.cut_size(G, valid_nodes)
+            volume = sum(dict(G.degree(valid_nodes)).values())
+            
+            if volume == 0:
+                results[f'community_{i}'] = 0
+            else:
+                conductance_value = cut_size / volume
+                results[f'community_{i}'] = conductance_value
+                valid_communities.append(i)
+        except Exception as e:
+            print(f"Lỗi khi tính conductance cho cộng đồng {i}: {str(e)}")
+            results[f'community_{i}'] = 0
     
     # Tính trung bình
-    results['average'] = np.mean(list(results.values()))
+    if valid_communities:
+        valid_values = [results[f'community_{i}'] for i in valid_communities]
+        results['average'] = np.mean(valid_values) if valid_values else 0
+    else:
+        # Nếu không có cộng đồng hợp lệ, trung bình là 0
+        results['average'] = 0
     
     return results
 
