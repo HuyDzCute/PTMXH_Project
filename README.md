@@ -41,4 +41,4 @@ streamlit run app/app.py
 ## Tài liệu tham khảo
 
 1. [Fortunato09] Santo Fortunato. Community detection in graphs. CoRRabs/0906.0612, 2009.
-2. [Gregory09] Steve Gregory. Finding Overlapping Communities Using Disjoint Community Detection Algorithms. CompleNet 2009: 47-61 
+2. [Gregory09] Steve Gregory. Finding Overlapping Communities Using Disjoint Community Detection Algorithms. CompleNet 2009: 47-61
